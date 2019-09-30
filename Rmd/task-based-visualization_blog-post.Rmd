@@ -1,0 +1,393 @@
+---
+title: "Turning a Bad Visualization into a Good One with Beer Data"
+subtitle: "DATA VISUALIZATION, BEER"
+author: "Sean Kent"
+date: "9/28/2019"
+output:
+  html_document: 
+    includes:
+      after_body: theme/footer.html
+    css: theme/style.css
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, cache = TRUE, warning = FALSE)
+knitr::opts_chunk$set(fig.width=10, fig.height=5) 
+
+# load in packages
+library(tidyverse)
+library(rvest)
+library(viridis)
+library(ggforce)
+library(here)
+
+## for output in Rmd document
+out <- function(x,digits=2) { 
+  I(round(x,digits))
+}
+
+```
+
+This blog post is all about personal growth.  Last year, I was playing around with some data I scraped from BeerAdvocate's website.  In particular, I was looking at their [Top 250 Rated Beers](https://www.beeradvocate.com/beer/top-rated/) list, which contains information on the beers that BeerAdvocate users rate highest.  From that data, I created the visualization in the following tweet: 
+
+<center>
+<blockquote class="twitter-tweet"><p lang="en" dir="ltr">How do different styles of beer fare among the Top 250 Beers? Spoiler alert: beer enthusiasts have a type (or two), but sometimes less known styles can have impressive scores. <br><br>Created with <a href="https://twitter.com/hashtag/ggplot2?src=hash&amp;ref_src=twsrc%5Etfw">#ggplot2</a> &amp; <a href="https://twitter.com/hashtag/rstats?src=hash&amp;ref_src=twsrc%5Etfw">#rstats</a>, source code will be on my website shortly! <a href="https://t.co/GimAYKsWNw">pic.twitter.com/GimAYKsWNw</a></p>&mdash; Sean Kent (@Sean__Kent) <a href="https://twitter.com/Sean__Kent/status/1019426198680752128?ref_src=twsrc%5Etfw">July 18, 2018</a></blockquote> <script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>
+</center>
+
+<br>
+
+To make it easier to read, I've recreated the same chart using more recent data, pulled on September 29, 2019.  
+
+
+
+
+
+```{r pull-in-data}
+# Webscrape data 
+extract_abv <- function(detail_string) {
+  # "Toppling Goliath Brewing CompanyAmerican Imperial Stout | 12.00%"
+  # goes to 12.00
+  detail_string %>% 
+    str_split(fixed("|")) %>% 
+    map(., ~.x[2]) %>% 
+    unlist() %>% 
+    str_remove("%") %>% 
+    as.numeric()
+}
+
+url <- "https://www.beeradvocate.com/beer/top-rated/"
+
+css_tags <- c(
+  ".hr_bottom_light a b", # beer name
+  ".hr_bottom_light:nth-child(3) b", # n_ratings
+  ".hr_bottom_light:nth-child(4) b", # average of ratings
+  ".muted a~ a", # beer type
+  ".hr_bottom_light .muted" # brewery, alcohol content, and beer type
+)
+
+d <-
+  css_tags %>% 
+  map(~ html_text(html_nodes(read_html(url), .))) %>% 
+  transpose() %>% 
+  {tibble(beer_name = map(., 1),
+          n_ratings = map(., 2),
+          score = map(., 3),
+          style = map(., 4),
+          details = map(., 5)) } %>% 
+  unnest(cols = c(beer_name, n_ratings, score, style, details)) %>% 
+  mutate(
+    n_ratings = as.numeric(gsub(",", "", n_ratings)),
+    score = as.numeric(score),
+    abv = extract_abv(details)
+  )
+
+# save the data at this date
+filename <- paste0("beeradvocate-top-250_webscraped_",lubridate::today(),".rds") 
+saveRDS(d, file = here("data",filename))
+
+```
+
+
+```{r old-vis}
+d %>% 
+  group_by(style) %>%
+  mutate(avg_score = mean(score)) %>%
+  ungroup() %>%
+  ggplot(aes(x = style,
+             fill = avg_score)) + 
+  geom_bar(stat = "count" ) + 
+  geom_text(stat = "count",
+            aes(label= d %>%
+                  group_by(style) %>%
+                  mutate(avg_score = mean(score)) %>%
+                  pull(avg_score) %>%
+                  formatC(2, format = "f") ),
+            hjust=-0.10, color="black", fontface="italic") +
+  scale_x_discrete(limits = d %>% 
+                     group_by(style) %>% 
+                     summarise(count = n()) %>% 
+                     arrange(count) %>%
+                     pull(style)
+  ) +
+  coord_flip() +
+  scale_fill_gradient(low = "#f0c566", high = "#882300", name = "Score") +
+  labs(title = "Popular Styles Among Top 250 Beers",
+       subtitle = "Top Beers According to BeerAdvocate",
+       x = "", y = "Count",
+       caption = "Labels show BeerAdvocate score (0-5) of highest rated beer in each category.  Data retrieved from https://www.beeradvocate.com/beer/top-rated/ 
+on 9/29/19.  Graphic created by @Sean__Kent.") +
+  theme(plot.caption=element_text(size=10, hjust=0, margin=margin(t=15)))
+
+```
+
+Now, as I'm currently enrolled in a class focused on Data Visualization (CS 765), I went back through some of my old visualizations and quickly realized several problems with this one:
+
+- **It isn't immediately clear what the colors of the bars or the numbers to the right of them mean**.  There's a legend that says "Score", but even that doesn't fully clarify the problem.
+  - To make things worse, the **color of the score in the legend is a similar color to beer**, which creates some confusion about whether the actual beer color plays a role in the plot.
+- It's easy to pick out the most popular beers, but the other **names get lost** since there are so many different styles
+- I can see that the two most popular styles have roughly 50 or 60 beers in the top 250, but it's **hard to understand the part-whole relationship** (requiring some mental arithmetic to figure out what percent that style has)
+
+It doesn't take being in a data vis class to see these issues.  Nevertheless, the class has helped to create a framework for critiquing the visualization and redesigning.  The number one takeaway for me so far is that most good visualizations start with a clear task or purpose.  With that concept in mind, let's talk about…
+
+## Task-based Visualization
+
+The purpose of the visualization was to **show that (at that time) American  IPAs and American Imperial Stouts were far more prevalent in the top 250 list than any other style of beer**.  A similar trend exists now, but with American Imperial Stouts and New England (sometimes called Hazy) IPAs.  
+
+With this purpose defined, including the information about the score is less important.  The score was the average (among beers in the top 250) of the average (among reviews for that beer) score from 0-5 for each style.  Since we are only looking at the top 250 beer by rating, we expect these scores to be very high anyway.  Sometimes a style with a high average is due to it only having a few beers in the top 250, whereas the common beers might be more spread out over the list.  Realizing this, it made much more sense to use color to encode more useful information about the style.  
+
+In the following redesign, I group the beers styles by family (using [BeerAdvocate's definitions](https://www.beeradvocate.com/beer/styles/) and match each family as closely as possible to the typical beer color in that family (using [this SRM chart](https://www.brewersfriend.com/2017/05/07/beer-styles-srm-color-chart-2017-update/) and an [SRM to hex code mapping](https://brookstonbeerbulletin.com/thinking-about-beer-color/).  
+
+<br>
+
+
+
+```{r map-style-to-color}
+srm_rounding <- function(srm) {
+  case_when(
+    srm < 13 ~ round(srm*2, digits = 0)/2,
+    srm >= 13 ~ round(srm, digits = 0)
+  )
+}
+
+srm_to_hex <- 
+  "https://brookstonbeerbulletin.com/thinking-about-beer-color/" %>% 
+  read_html() %>% 
+  html_nodes("table") %>% 
+  .[[4]] %>% 
+  html_table() %>% 
+  mutate(Code = paste0("#",Code)) %>% 
+  as_tibble() %>% 
+  mutate_at(vars(SRM), parse_number)
+
+style_to_srm <- 
+  readxl::read_xlsx("data/beer-style-family-srm.xlsx",
+                                  sheet = "style_to_srm") 
+
+d <-
+  d %>% 
+  left_join(style_to_srm, by = c("style" = "style")) %>% 
+  group_by(family) %>% 
+  mutate(srm_family_avg = srm_rounding(mean(srm_avg))) %>%  # naturally weighted by size of style
+  left_join(srm_to_hex %>% select("SRM","Code"), by = c("srm_family_avg" = "SRM"))
+
+# srm_to_hex; style_to_srm; d
+
+```
+
+```{r}
+family_code_mapping <- d %>% select(family, Code) %>% unique() %>% deframe
+# family_order <- d %>% group_by(family) %>% summarize(count = n()) %>% arrange(-count) %>% pull(family)
+family_order <- d %>% group_by(family) %>% tally(sort = TRUE) %>% pull(family)
+style_order <- d %>% group_by(style) %>% tally(sort = TRUE) %>% pull(style)
+```
+
+```{r}
+d %>% 
+  ggplot(aes(x = style,
+             fill = family)) + 
+  geom_bar(stat = "count" ) + 
+  scale_x_discrete(limits = rev(style_order)) +
+  scale_fill_manual(values = family_code_mapping,
+                    name = " ",
+                    limits = family_order) +
+  # scale_fill_identity(guide = "legend", name = "Beer Color") +
+  # guides(fill = guide_legend(label = FALSE, keyheight = 0.3, keywidth = 4)) +
+  coord_flip() +
+  theme_minimal() +
+  # theme(legend.position = c(0.8, 0.2)) +
+  theme(plot.caption=element_text(size=10, hjust=0, margin=margin(t=15))) + 
+  labs(title = "Popular Styles Among Top 250 Beers",
+       subtitle = "Top Beers According to BeerAdvocate",
+       x = "", y = "Number of beers in BeerAdvocate's Top 250",
+       caption = "Styles are ordered by number of beers in BeerAdvocate's Top 250 Rated Beers list.  Legend includes 
+beer families, which are also ordered by number of beers in the list.  Data retrieved from 
+https://www.beeradvocate.com/beer/top-rated/ on 9/29/19.  Graphic created by @Sean__Kent.")
+  
+
+```
+
+<br>
+
+This plot does a lot of things right.  It helps show that while a few styles still have a large number of beers in the top 250 list, the color of these beers is quite diverse and many families of beer are competing for these top spots (Stouts, IPAs, Wild/Sour Beers).  The color confusion is nearly eliminated, and overall it is much more effective at the purpose.  
+
+
+However, the last two critiques from before still aren't fully addressed.  Can we address them without losing the message?
+
+## Enter Treemap
+
+Treemaps tend to be polarizing graphics.  There are great examples where treemaps work (See [In Praise of Treemaps](https://www.datarevelations.com/in-praise-of-treemaps.html) for an example with data from the 2012 US Presidential Election and examples where they don't work (See [10 Lessons in Treemap Design](https://www.juiceanalytics.com/writing/10-lessons-treemap-design) for a lot of bad examples).  
+
+As discussed in [An Alternative To Treemaps](http://www.storytellingwithdata.com/blog/2018/6/5/an-alternative-to-treemaps), there are appropriate uses for Treemaps, especially when 
+
+>	1. You want to visualize a part-to-whole relationship amongst a large number of categories.
+>	2. Precise comparisons between categories are not important.
+>	3. The data is hierarchical.
+	
+But this is almost exactly what the beer data is.  We care about what fraction each style is of the 250 total beers, and there are many styles in this list.  Precise comparisons aren't important, and there is a hierarchy in that each style belongs to a family.  We might also care whether that family is popular or not, which is very hard to determine, even from the redesign.  
+
+Fortunately, I found a great package `treemapify` designed by David Wilkins (and available on [CRAN](https://cran.r-project.org/web/packages/treemapify/index.html)).  It allows one to make treemaps within a `ggplot2` framework.  After a bit of work on the details, I landed on the following adapted redesign, which I am quite happy with.
+
+<br>
+
+```{r final-vis}
+library(treemapify)
+# devtools::install_github("clauswilke/ggtext")
+library(ggtext)
+
+p_treemap <- 
+  d %>% 
+  group_by(style) %>%
+  summarize(avg_score = mean(score),
+         count = n(),
+         Code = max(Code),
+         family = max(family)) %>% 
+  ggplot(aes(area = count, label = style, fill = family, subgroup = family)) +
+  geom_treemap(start = "topleft") +
+  geom_treemap_text(color = "white",
+                    start = "topleft",
+                    reflow = TRUE,
+                    size = 10) +
+  # geom_treemap_subgroup_border(color = "white", start = "topleft") +
+  scale_fill_manual(values = family_code_mapping,
+                    name = " ",
+                    limits = family_order) + 
+  # scale_fill_identity(guide = "legend") +
+  theme() +
+  theme(legend.position = "none",
+        plot.caption = element_text(hjust = 0)) + 
+  labs(title = "<b style='color:#2f0200'>Stouts</b> and <b style='color:#c86505'>IPAs</b> Dominate the Palettes of Beer Enthusiasts",
+       subtitle = "Distribution of styles among BeerAdvocate's Top 250 Rated Beers",
+       caption = "Size represents number of beers in BeerAdvocate's Top 250 Rated Beers.  Data retrieved from https://www.beeradvocate.com/beer/top-rated/ on 9/29/19.
+Graphic created by @Sean__Kent.") +
+  theme(plot.title = element_markdown(lineheight = 1.1),
+        plot.subtitle = element_markdown(lineheight = 1.1))
+
+# p_treemap
+'%ni%' <- Negate('%in%')
+
+p_family_legend <- 
+  d %>% 
+  ggplot(aes(x = family, fill = family)) + 
+  geom_bar(stat = "count") +
+  geom_text(aes(label=family), 
+            stat = "count",
+            hjust=1.1,
+            color="grey95",
+            size = 3,
+            # fontface="bold",
+            data = d %>% filter(family %in% c("Stouts","India Pale Ales"))
+  ) + 
+  geom_text(aes(label=family), 
+            stat = "count",
+            hjust=-0.05,
+            color="grey5",
+            size = 3,
+            # fontface="bold",
+            data = d %>% filter(family %ni% c("Stouts","India Pale Ales"))
+  ) + 
+  scale_x_discrete(limits = rev(family_order),
+                   breaks = NULL) +
+  scale_fill_manual(values = family_code_mapping,
+                    name = " ",
+                    limits = NULL) +
+  coord_flip() +
+  theme_minimal() + 
+  theme(legend.position = "none") +
+  ylim(c(0,100)) + 
+  labs(x = "", y = "", subtitle = "Count by Beer Family") 
+
+# p_family_legend
+
+# produce the final plot with grid.arrange 
+library(gridExtra)
+grid.arrange(
+  grobs = list(p_treemap, p_family_legend),
+  layout_matrix = rbind(c(1,NA),
+                        c(1,2),
+                        c(1,NA)),
+  widths = c(4.5,1),
+  heights = c(1,4,1)
+)
+
+```
+
+<br>
+
+The original purpose is well demonstrated by the treemap, and it seems to address all of the critiques of the original design.  We lost the ability to know exactly how many beers are in each style, but visualizing the part-whole relationship is much clearer.  I'm proud of the "bar chart legend" on the side which shows which colors map to each beer family, while also giving some detail on the count each family has in the top 250 list.  
+
+Overall, I think this visualization is miles ahead of my original design.  I was surprised at how effective thinking about a specific task and critiquing a visualization could be.  I'm always encouraged to see my growth and I hope this post inspires you to take a look at your visualizations with some of the techniques I describe.  
+
+If you're curious how I made the visualizations, all of the R code and data is available on Github: https://github.com/skent259/beer-data.  Feel free to check out my twitter [\@Sean__Kent](https://twitter.com/Sean__Kent), where I infrequently post about data visualization and cool things from the statistics community and the R community.  More blog posts to come soon!
+
+
+<!-- Outline: -->
+
+<!-- - Intro -->
+<!--   - old visualization (maybe embed the tweet) -->
+<!--   - data vis class, revisit -->
+<!--   - Admit many flaws in the visual, detail some of them -->
+<!-- - Task based visualization -->
+<!--   - detail the purpose: Of the beers in the top 250 beeradvocate list, is there a style/family that dominates that list? -->
+<!--   - ignore scores since they are biased (we're only looking at the top 250 beers).  Also, there's not much heterogeneity anyways, and it's not interesting. -->
+<!-- - Better visual -->
+<!--   - Same chart as before, but more focussed to the task -->
+<!--   - Talk about why better -->
+<!-- - Final visual -->
+<!--   - Talk about why visual falls slightly short (or could be better) -->
+<!--   - Treemap  -->
+<!--   - Reference other articles, why treemap is appropriate here -->
+
+<!-- - Maybe include a final bit with old visual (new data) vs new one -->
+
+
+
+
+
+
+
+<!-- ```{r} -->
+<!-- d %>%  -->
+<!--   group_by(style) %>% -->
+<!--   summarize(avg_score = mean(score), -->
+<!--          count = n()) %>%  -->
+<!--   ggplot(aes(avg_score, count)) +  -->
+<!--   geom_point() + -->
+<!--   geom_text(aes(label = style), nudge_x = .03, nudge_y = 3) -->
+
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- top_styles <- -->
+<!--   d %>%  -->
+<!--   group_by(style) %>%  -->
+<!--   summarise(count = n()) %>%  -->
+<!--   filter(count >= 10) %>%  -->
+<!--   arrange(count) %>%  -->
+<!--   pull(style) -->
+
+<!-- # top_styles -->
+
+<!-- # add average score as dotted line? -->
+<!-- d %>%  -->
+<!--   filter(style %in% top_styles) %>%  -->
+<!--   ggplot(aes(style, score)) + -->
+<!--   geom_jitter(aes(color = style), height = 0, width = 0.2) +  -->
+<!--   scale_x_discrete(limits = top_styles) + -->
+<!--   geom_text(aes(label = style), y = 5) + # want to have average here? # try geom_label -->
+<!--   coord_flip() +  -->
+<!--   theme_minimal() + -->
+<!--   ylim(NA, 5) + -->
+<!--   theme(legend.position = "none") -->
+
+<!-- d %>%  -->
+<!--   filter(style %in% top_styles) %>%  -->
+<!--   ggplot(aes(n_ratings, score)) + -->
+<!--   geom_jitter(aes(color = style), height = 0, width = 0.2) +  -->
+<!--   geom_text(aes(label = beer_name), check_overlap = TRUE) +  -->
+<!--   theme_minimal() + -->
+<!--   theme(legend.position = "none") -->
+
+<!-- ``` -->
+
+<br>
+<br>
