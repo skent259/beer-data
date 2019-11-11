@@ -2,3 +2,10 @@
 .Rhistory
 .RData
 .Ruserdata
+
+
+# Rmd files that have html or css in them
+Rmd/*.html
+Rmd/theme/
+Rmd/task-based-visualization_blog-post_files/
+Rmd/task-based-visualization_blog-post_cache/
